@@ -229,6 +229,7 @@ type bbrSender struct {
 var (
 	_ SendAlgorithm               = &bbrSender{}
 	_ SendAlgorithmWithDebugInfos = &bbrSender{}
+	_ ApplicationLimitedHandler   = &bbrSender{}
 )
 
 // NewBBRSender creates a BBRv3 congestion controller.
@@ -313,6 +314,15 @@ func (b *bbrSender) OnSpuriousLoss(protocol.PacketNumber) {}
 // MaybeExitSlowStart is a no-op: BBR leaves Startup on its own bandwidth-plateau
 // and loss estimators (§5.3.1), not on quic-go's HyStart-style hint.
 func (b *bbrSender) MaybeExitSlowStart() {}
+
+// OnApplicationLimited implements MarkConnectionAppLimited() from §4.1.2.4.
+// Every packet sent until the data outstanding at this moment has been
+// delivered is marked as application-limited, and samples covering those
+// packets are barred from lowering the bandwidth estimate or from being read
+// as evidence that the pipe is full.
+func (b *bbrSender) OnApplicationLimited(bytesInFlight protocol.ByteCount) {
+	b.sampler.MarkAppLimited(bytesInFlight)
+}
 
 func (b *bbrSender) OnPacketSent(
 	sentTime monotime.Time,
