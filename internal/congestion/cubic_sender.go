@@ -5,7 +5,6 @@ import (
 
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/qlog"
 	"github.com/quic-go/quic-go/qlogwriter"
 )
@@ -22,8 +21,7 @@ const (
 
 type cubicSender struct {
 	hybridSlowStart HybridSlowStart
-	rttStats        *utils.RTTStats
-	connStats       *utils.ConnectionStats
+	rttStats        RTTStatsProvider
 	cubic           *Cubic
 	pacer           *pacer
 	clock           Clock
@@ -69,8 +67,7 @@ var (
 // NewCubicSender makes a new cubic sender
 func NewCubicSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	initialMaxDatagramSize protocol.ByteCount,
 	reno bool,
 	qlogger qlogwriter.Recorder,
@@ -78,7 +75,6 @@ func NewCubicSender(
 	return newCubicSender(
 		clock,
 		rttStats,
-		connStats,
 		reno,
 		initialMaxDatagramSize,
 		initialCongestionWindow*initialMaxDatagramSize,
@@ -89,8 +85,7 @@ func NewCubicSender(
 
 func newCubicSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	reno bool,
 	initialMaxDatagramSize,
 	initialCongestionWindow,
@@ -99,7 +94,6 @@ func newCubicSender(
 ) *cubicSender {
 	c := &cubicSender{
 		rttStats:                   rttStats,
-		connStats:                  connStats,
 		largestSentPacketNumber:    protocol.InvalidPacketNumber,
 		largestAckedPacketNumber:   protocol.InvalidPacketNumber,
 		largestSentAtLastCutback:   protocol.InvalidPacketNumber,
@@ -197,9 +191,6 @@ func (c *cubicSender) OnPacketAcked(
 }
 
 func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lostBytes, priorInFlight protocol.ByteCount) {
-	c.connStats.PacketsLost.Add(1)
-	c.connStats.BytesLost.Add(uint64(lostBytes))
-
 	// TCP NewReno (RFC6582) says that once a loss occurs, any losses in packets
 	// already sent should be treated as a single loss event, since it's expected.
 	if packetNumber <= c.largestSentAtLastCutback {
