@@ -30,6 +30,21 @@ type SendAlgorithm interface {
 	SetMaxDatagramSize(protocol.ByteCount)
 }
 
+// An ApplicationLimitedHandler is a SendAlgorithm that wants to be told when the
+// connection is application-limited: the application had nothing left to send
+// even though the congestion window still had room.
+//
+// draft-ietf-ccwg-bbr-06 §4.1.2.4 calls this CheckIfApplicationLimited(). A
+// delivery rate measured over such a period describes the application, not the
+// path, so a model-based controller must not treat it as evidence about the
+// network. Loss-based controllers have no use for it, which is why this is a
+// separate optional interface rather than a method on SendAlgorithm.
+type ApplicationLimitedHandler interface {
+	// OnApplicationLimited is called with the volume of data in flight at the
+	// moment the application ran dry.
+	OnApplicationLimited(bytesInFlight protocol.ByteCount)
+}
+
 // A SendAlgorithmWithDebugInfos is a SendAlgorithm that exposes some debug infos
 type SendAlgorithmWithDebugInfos interface {
 	SendAlgorithm

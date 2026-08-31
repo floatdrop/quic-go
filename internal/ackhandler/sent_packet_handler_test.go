@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/congestion"
 	"github.com/quic-go/quic-go/internal/mocks"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -1790,4 +1791,67 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 			ranges = ranges[:0]
 		}
 	}
+}
+
+// appLimitedRecorder is a congestion controller that records the
+// application-limited notifications it receives.
+type appLimitedRecorder struct {
+	congestion.SendAlgorithmWithDebugInfos
+	calls []protocol.ByteCount
+}
+
+func (r *appLimitedRecorder) OnApplicationLimited(bytesInFlight protocol.ByteCount) {
+	r.calls = append(r.calls, bytesInFlight)
+}
+
+// TestSentPacketHandlerOnApplicationLimited covers the half of
+// CheckIfApplicationLimited() (draft-ietf-ccwg-bbr-06 §4.1.2.4) that the handler
+// owns: a connection is only application-limited if the congestion window still
+// had room. A full window means congestion-limited, and those samples are real
+// measurements of the path that must not be discarded.
+func TestSentPacketHandlerOnApplicationLimited(t *testing.T) {
+	newHandler := func(t *testing.T) (*sentPacketHandler, *appLimitedRecorder) {
+		t.Helper()
+		var rec *appLimitedRecorder
+		h := NewSentPacketHandler(
+			0, protocol.InitialPacketSize,
+			utils.NewRTTStats(), &utils.ConnectionStats{},
+			true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger,
+			func(rttStats congestion.RTTStatsProvider, size protocol.ByteCount, q qlogwriter.Recorder) congestion.SendAlgorithmWithDebugInfos {
+				rec = &appLimitedRecorder{
+					SendAlgorithmWithDebugInfos: congestion.NewBBRSender(congestion.DefaultClock{}, rttStats, size, q),
+				}
+				return rec
+			},
+		).(*sentPacketHandler)
+		return h, rec
+	}
+
+	t.Run("forwards when the window has room", func(t *testing.T) {
+		h, rec := newHandler(t)
+		h.OnApplicationLimited()
+		require.Len(t, rec.calls, 1)
+		require.Zero(t, rec.calls[0], "nothing in flight")
+	})
+
+	t.Run("suppressed when congestion limited", func(t *testing.T) {
+		h, rec := newHandler(t)
+		// Fill the congestion window.
+		h.bytesInFlight = h.congestion.GetCongestionWindow()
+		h.OnApplicationLimited()
+		require.Empty(t, rec.calls, "a full window is congestion-limited, not app-limited")
+	})
+
+	t.Run("no-op for a controller that does not implement it", func(t *testing.T) {
+		h := NewSentPacketHandler(
+			0, protocol.InitialPacketSize,
+			utils.NewRTTStats(), &utils.ConnectionStats{},
+			true, false, nil, protocol.PerspectiveClient, nil, utils.DefaultLogger,
+			func(rttStats congestion.RTTStatsProvider, size protocol.ByteCount, q qlogwriter.Recorder) congestion.SendAlgorithmWithDebugInfos {
+				// Reno does not implement ApplicationLimitedHandler.
+				return congestion.NewCubicSender(congestion.DefaultClock{}, rttStats, size, true, q)
+			},
+		)
+		require.NotPanics(t, h.OnApplicationLimited)
+	})
 }
