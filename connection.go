@@ -678,6 +678,11 @@ runLoop:
 		// This could cause packets to be declared lost, and retransmissions to be enqueued.
 		now := monotime.Now()
 		if timeout := c.sentPacketHandler.GetLossDetectionTimeout(); !timeout.IsZero() && !timeout.After(now) {
+			// §4.1.2.4 checks for an application-limited phase at the beginning
+			// of processing any timer that might transmit data. Loss detection
+			// is that timer here: it can declare packets lost and queue their
+			// frames for retransmission.
+			c.checkIfApplicationLimited()
 			if err := c.sentPacketHandler.OnLossDetectionTimeout(now); err != nil {
 				c.setCloseError(&closeError{err: err})
 				break runLoop
@@ -2116,6 +2121,10 @@ func (c *Conn) handleHandshakeDoneFrame(rcvTime monotime.Time) error {
 }
 
 func (c *Conn) handleAckFrame(frame *wire.AckFrame, encLevel protocol.EncryptionLevel, rcvTime monotime.Time) error {
+	// §4.1.2.4 checks for an application-limited phase at the beginning of ACK
+	// processing, before bytes in flight is updated and before congestion
+	// control modifies cwnd or the pacing rate.
+	c.checkIfApplicationLimited()
 	acked1RTTPacket, err := c.sentPacketHandler.ReceivedAck(frame, encLevel, c.lastPacketReceivedTime)
 	if err != nil {
 		return err
@@ -2450,6 +2459,40 @@ func (c *Conn) applyTransportParameters() {
 	)
 }
 
+// checkIfApplicationLimited implements CheckIfApplicationLimited() from
+// draft-ietf-ccwg-bbr-06 §4.1.2.4: if the connection has nothing left to send,
+// tell the congestion controller, so that delivery rate samples covering the
+// idle period are not read as measurements of the path.
+//
+// This half establishes "no unsent data and no pending transmissions"; the
+// sent packet handler adds "C.inflight < C.cwnd", which only it can see. The
+// three frame sources consulted here are exactly the ones composeNextPacket
+// draws on, so "nothing here" and "the packer would return errNothingToPack"
+// are the same statement.
+//
+// The draft names three moments to run this check. Two map directly: the start
+// of ACK processing, and the start of processing a timer that might transmit.
+// The third, "upon each write from the application, before new application data
+// is enqueued", has no counterpart here — quic-go's write notifications fire
+// once the data is already in the framer, where the no-unsent-data test would
+// always fail. Instead the send loops call this on errNothingToPack, marking
+// when the connection drains rather than when the next write arrives.
+//
+// That yields the same value. MarkConnectionAppLimited records the watermark
+// C.delivered + C.inflight, and across an interval in which nothing is sent
+// that sum is conserved: every byte that leaves inflight is added to delivered.
+// So the watermark taken when the application runs dry equals the one the draft
+// would take at the next write, and the same packets end up marked.
+func (c *Conn) checkIfApplicationLimited() {
+	if c.framer.HasData() || c.retransmissionQueue.HasData(protocol.Encryption1RTT) {
+		return
+	}
+	if c.datagramQueue != nil && c.datagramQueue.Peek() != nil {
+		return
+	}
+	c.sentPacketHandler.OnApplicationLimited()
+}
+
 func (c *Conn) triggerSending(now monotime.Time) error {
 	c.pacingDeadline = 0
 
@@ -2568,6 +2611,7 @@ func (c *Conn) sendPacketsWithoutGSO(now monotime.Time) error {
 		if _, err := c.appendOneShortHeaderPacket(buf, c.maxPacketSize(), ecn, now); err != nil {
 			if err == errNothingToPack {
 				buf.Release()
+				c.checkIfApplicationLimited()
 				return nil
 			}
 			return err
@@ -2609,6 +2653,10 @@ func (c *Conn) sendPacketsWithGSO(now monotime.Time) error {
 			if err != errNothingToPack {
 				return err
 			}
+			// Running dry partway through a GSO batch is application-limited
+			// too: everything the application had went out and the window
+			// still had room.
+			c.checkIfApplicationLimited()
 			if buf.Len() == 0 {
 				buf.Release()
 				return nil

@@ -18,6 +18,12 @@ type SentPacketHandler interface {
 	DropPackets(_ protocol.EncryptionLevel, rcvTime monotime.Time)
 	ResetForRetry(rcvTime monotime.Time)
 
+	// OnApplicationLimited reports that the application had nothing left to
+	// send. The caller is responsible for the "no unsent data" half of
+	// draft-ietf-ccwg-bbr-06 §4.1.2.4's condition; this checks the congestion
+	// window half and informs the congestion controller.
+	OnApplicationLimited()
+
 	// The SendMode determines if and what kind of packets can be sent.
 	SendMode(now monotime.Time) SendMode
 	// TimeUntilSend is the time when the next packet should be sent.

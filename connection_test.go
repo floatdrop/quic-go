@@ -1811,6 +1811,9 @@ func TestConnectionPacketPacing(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		sender := NewMockSender(mockCtrl)
 
 		tc := newServerTestConnection(t,
@@ -1930,6 +1933,9 @@ func TestConnectionPacingAndSendQueue(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		sender := NewMockSender(mockCtrl)
 
 		tc := newServerTestConnection(t,
@@ -1985,6 +1991,9 @@ func TestConnectionIdleTimeout(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			&Config{MaxIdleTimeout: time.Minute},
@@ -2133,6 +2142,9 @@ func TestConnectionACKTimer(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			&Config{MaxIdleTimeout: time.Second},
@@ -2219,6 +2231,9 @@ func TestConnectionGSOBatch(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			nil,
@@ -2285,6 +2300,9 @@ func TestConnectionGSOBatchPacketSize(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			nil,
@@ -2372,6 +2390,9 @@ func TestConnectionGSOBatchECN(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			nil,
@@ -2470,6 +2491,9 @@ func testConnectionPTOProbePackets(t *testing.T, encLevel protocol.EncryptionLev
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			nil,
@@ -2537,6 +2561,9 @@ func TestConnectionCongestionControl(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		tc := newServerTestConnection(t,
 			mockCtrl,
 			nil,
@@ -2632,6 +2659,9 @@ func testConnectionSendQueue(t *testing.T, enableGSO bool) {
 	synctest.Test(t, func(t *testing.T) {
 		mockCtrl := gomock.NewController(t)
 		sph := mockackhandler.NewMockSentPacketHandler(mockCtrl)
+		// Called opportunistically whenever the connection finds it has nothing
+		// left to send; incidental to what these tests assert.
+		sph.EXPECT().OnApplicationLimited().AnyTimes()
 		sender := NewMockSender(mockCtrl)
 		tc := newServerTestConnection(t,
 			mockCtrl,

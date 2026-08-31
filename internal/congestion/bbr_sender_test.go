@@ -694,3 +694,135 @@ func TestBBRHoldsShorterQueueThanReno(t *testing.T) {
 		"BBR peak RTT %v should stay within a small multiple of the %v propagation delay",
 		bbr.maxRTT, minRTT)
 }
+
+func TestBBROnApplicationLimitedMarksSampler(t *testing.T) {
+	s, _, _ := newTestBBRSender(t)
+	require.False(t, s.sampler.isAppLimited())
+	s.OnApplicationLimited(10 * maxDatagramSize)
+	require.True(t, s.sampler.isAppLimited())
+}
+
+// TestBBRAppLimitedSamplesDoNotEndStartup is the property the hook exists for.
+// A sender pinned at a rate far below the path capacity produces a flat delivery
+// rate, which is indistinguishable from a bandwidth plateau unless the samples
+// are marked application-limited. Draft §5.3.1.2 requires the plateau estimator
+// to ignore them, and §A.7 states the consequence directly: a flow that is
+// application-limited with no loss must never leave Startup.
+func TestBBRAppLimitedSamplesDoNotEndStartup(t *testing.T) {
+	const bw = 2 * 1000 * 1000 * BitsPerSecond
+
+	t.Run("unmarked samples look like a plateau", func(t *testing.T) {
+		s, _, _ := newTestBBRSender(t)
+		for range 10 {
+			s.roundStart = true
+			s.checkFullBWReached(bbrRateSample{deliveryRate: bw})
+		}
+		s.checkStartupDone()
+		require.True(t, s.fullBWReached)
+		require.Equal(t, bbrDrain, s.mode, "a flat rate is read as a full pipe")
+	})
+
+	t.Run("marked samples do not", func(t *testing.T) {
+		s, _, _ := newTestBBRSender(t)
+		for range 10 {
+			s.roundStart = true
+			s.checkFullBWReached(bbrRateSample{deliveryRate: bw, isAppLimited: true})
+		}
+		s.checkStartupDone()
+		require.False(t, s.fullBWReached)
+		require.Equal(t, bbrStartup, s.mode, "an application-limited flow keeps looking")
+	})
+}
+
+// TestBBRAppLimitedHookImprovesBurstLatency drives the sender with a
+// conferencing traffic pattern — a small frame every 33ms with a periodic
+// keyframe — on a link far faster than the application uses. Without the
+// application-limited signal the flow concludes the encoder's bitrate is the
+// path's capacity, leaves Startup, and paces every subsequent burst at that
+// rate. With it, the flow keeps Startup's gain and drains bursts faster.
+func TestBBRAppLimitedHookImprovesBurstLatency(t *testing.T) {
+	const (
+		bw            = 50 * 1000 * 1000 * BitsPerSecond
+		minRTT        = 50 * time.Millisecond
+		frameInterval = 33 * time.Millisecond
+		frameBytes    = protocol.ByteCount(6000)  // ~1.5 Mbps
+		keyBytes      = protocol.ByteCount(60000) // a keyframe
+		runFor        = 30 * time.Second
+	)
+
+	run := func(t *testing.T, markAppLimited bool) time.Duration {
+		t.Helper()
+		sim := newBBRSim(t, bbrTestPath{
+			bw: bw, minRTT: minRTT, bufferBytes: 4 * bandwidthToBytes(bw, minRTT),
+		})
+		var (
+			queue       protocol.ByteCount
+			nextFrame   = sim.now()
+			frameNo     int
+			burstStart  = sim.now()
+			burstLeft   protocol.ByteCount
+			burstTimes  []time.Duration
+			deadlineEnd = sim.now().Add(runFor)
+		)
+		for sim.now().Before(deadlineEnd) {
+			if !sim.now().Before(nextFrame) {
+				n := frameBytes
+				if frameNo%30 == 0 {
+					n = keyBytes
+					burstStart = sim.now()
+					burstLeft = n
+				}
+				queue += n
+				frameNo++
+				nextFrame = nextFrame.Add(frameInterval)
+			}
+			sent := false
+			for queue > 0 && sim.sender.CanSend(sim.inflight) && sim.sender.HasPacingBudget(sim.now()) {
+				sim.send()
+				queue -= min(queue, maxDatagramSize)
+				if burstLeft > 0 {
+					burstLeft -= min(burstLeft, maxDatagramSize)
+					if burstLeft == 0 {
+						burstTimes = append(burstTimes, sim.now().Sub(burstStart))
+					}
+				}
+				sent = true
+			}
+			// The application ran dry while the window still had room: this is
+			// exactly what connection.checkIfApplicationLimited detects.
+			if markAppLimited && queue == 0 && sim.sender.CanSend(sim.inflight) {
+				sim.sender.OnApplicationLimited(sim.inflight)
+			}
+			next := deadlineEnd
+			if ev, ok := sim.nextEvent(); ok && ev.Before(next) {
+				next = ev
+			}
+			if nextFrame.Before(next) {
+				next = nextFrame
+			}
+			if until := sim.sender.TimeUntilSend(sim.inflight); queue > 0 &&
+				!until.IsZero() && until.After(sim.now()) && until.Before(next) {
+				next = until
+			}
+			if !next.After(sim.now()) {
+				if sent {
+					continue
+				}
+				next = sim.now().Add(time.Millisecond)
+			}
+			sim.clock.Advance(next.Sub(sim.now()))
+			sim.deliver()
+		}
+		require.NotEmpty(t, burstTimes, "test setup: no keyframe completed")
+		var total time.Duration
+		for _, d := range burstTimes {
+			total += d
+		}
+		return total / time.Duration(len(burstTimes))
+	}
+
+	without := run(t, false)
+	with := run(t, true)
+	require.Less(t, with, without,
+		"marking application-limited should drain bursts faster: %v with, %v without", with, without)
+}

@@ -90,6 +90,11 @@ type sentPacketHandler struct {
 	bytesInFlight protocol.ByteCount
 
 	congestion congestion.SendAlgorithmWithDebugInfos
+	// appLimited is congestion, if it cares about application-limited periods.
+	// Resolved once rather than type-asserted per call: for a flow that is
+	// application-limited most of the time — which is the case this exists for —
+	// OnApplicationLimited runs on nearly every pass through the send loop.
+	appLimited congestion.ApplicationLimitedHandler
 	// newCongestionController rebuilds the congestion controller after a path
 	// migration, when the old path's model no longer describes the connection.
 	newCongestionController CongestionControllerFactory
@@ -136,7 +141,8 @@ func NewSentPacketHandler(
 	if newCongestionController == nil {
 		newCongestionController = defaultCongestionController
 	}
-	congestion := newCongestionController(rttStats, initialMaxDatagramSize, qlogger)
+	cc := newCongestionController(rttStats, initialMaxDatagramSize, qlogger)
+	appLimited, _ := cc.(congestion.ApplicationLimitedHandler)
 
 	h := &sentPacketHandler{
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
@@ -147,7 +153,8 @@ func NewSentPacketHandler(
 		lostPackets:                    *newLostPacketTracker(64),
 		rttStats:                       rttStats,
 		connStats:                      connStats,
-		congestion:                     congestion,
+		congestion:                     cc,
+		appLimited:                     appLimited,
 		newCongestionController:        newCongestionController,
 		ignorePacketsBelow:             ignorePacketsBelow,
 		perspective:                    pers,
@@ -1026,6 +1033,23 @@ func (h *sentPacketHandler) SendMode(now monotime.Time) SendMode {
 	return SendAny
 }
 
+// OnApplicationLimited implements the C.inflight < C.cwnd half of
+// CheckIfApplicationLimited() (draft-ietf-ccwg-bbr-06 §4.1.2.4). The caller has
+// already established that there is no unsent data and nothing awaiting
+// retransmission.
+func (h *sentPacketHandler) OnApplicationLimited() {
+	if h.appLimited == nil {
+		return
+	}
+	// A full congestion window means the connection is congestion-limited, not
+	// application-limited: the samples it produces do describe the path, and
+	// discarding them would be wrong.
+	if !h.congestion.CanSend(h.bytesInFlight) {
+		return
+	}
+	h.appLimited.OnApplicationLimited(h.bytesInFlight)
+}
+
 func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 	return h.congestion.TimeUntilSend(h.bytesInFlight)
 }
@@ -1135,5 +1159,6 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 		h.appDataPackets.history.RemovePathProbe(pn)
 	}
 	h.congestion = h.newCongestionController(h.rttStats, initialMaxDatagramSize, h.qlogger)
+	h.appLimited, _ = h.congestion.(congestion.ApplicationLimitedHandler)
 	h.setLossDetectionTimer(now)
 }
