@@ -181,6 +181,10 @@ type Config struct {
 	// Enable QUIC Stream Resets with Partial Delivery.
 	// See https://datatracker.ietf.org/doc/html/draft-ietf-quic-reliable-stream-reset-09.
 	EnableStreamResetPartialDelivery bool
+	// Congestion returns the congestion controller for a connection. It is
+	// called once per connection, and again after each path migration.
+	// If nil, BBRv3 is used. See [NewBBRv3], [NewReno] and [NewCubic].
+	Congestion CongestionControllerFactory
 
 	Tracer func(ctx context.Context, isClient bool, connID ConnectionID) qlogwriter.Trace
 }

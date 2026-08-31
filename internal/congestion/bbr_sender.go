@@ -132,12 +132,11 @@ const (
 )
 
 type bbrSender struct {
-	clock     Clock
-	rttStats  *utils.RTTStats
-	connStats *utils.ConnectionStats
-	pacer     *pacer
-	sampler   *bbrSampler
-	rand      utils.Rand
+	clock    Clock
+	rttStats RTTStatsProvider
+	pacer    *pacer
+	sampler  *bbrSampler
+	rand     utils.Rand
 
 	mode     bbrMode
 	ackPhase bbrAckPhase
@@ -234,15 +233,13 @@ var (
 // NewBBRSender creates a BBRv3 congestion controller.
 func NewBBRSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	initialMaxDatagramSize protocol.ByteCount,
 	qlogger qlogwriter.Recorder,
 ) *bbrSender {
 	return newBBRSender(
 		clock,
 		rttStats,
-		connStats,
 		initialMaxDatagramSize,
 		bbrInitialCwndPackets*initialMaxDatagramSize,
 		protocol.MaxCongestionWindowPackets*initialMaxDatagramSize,
@@ -252,8 +249,7 @@ func NewBBRSender(
 
 func newBBRSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	initialMaxDatagramSize,
 	initialCongestionWindow,
 	maxCongestionWindow protocol.ByteCount,
@@ -263,7 +259,6 @@ func newBBRSender(
 	b := &bbrSender{
 		clock:                   clock,
 		rttStats:                rttStats,
-		connStats:               connStats,
 		sampler:                 newBBRSampler(),
 		maxDatagramSize:         initialMaxDatagramSize,
 		initialCwnd:             initialCongestionWindow,
@@ -375,9 +370,6 @@ func (b *bbrSender) OnCongestionEvent(
 	lostBytes protocol.ByteCount,
 	priorInFlight protocol.ByteCount,
 ) {
-	b.connStats.PacketsLost.Add(1)
-	b.connStats.BytesLost.Add(uint64(lostBytes))
-
 	p, ok := b.sampler.OnPacketLost(number, lostBytes)
 	b.handleLostPacket(p, ok)
 

@@ -22,7 +22,6 @@ func newTestBBRSender(t *testing.T) (*bbrSender, *mockClock, *utils.RTTStats) {
 	s := newBBRSender(
 		&clock,
 		rttStats,
-		&utils.ConnectionStats{},
 		maxDatagramSize,
 		bbrInitialCwndPackets*maxDatagramSize,
 		protocol.MaxCongestionWindowPackets*maxDatagramSize,
@@ -625,7 +624,7 @@ func newRenoSim(t *testing.T, path bbrTestPath) *bbrSim {
 		path:       path,
 		rng:        rand.New(rand.NewPCG(1, 2)),
 		linkFreeAt: clock.Now(),
-		alt: newCubicSender(&clock, rttStats, &utils.ConnectionStats{}, true,
+		alt: newCubicSender(&clock, rttStats, true,
 			maxDatagramSize, bbrInitialCwndPackets*maxDatagramSize,
 			protocol.MaxCongestionWindowPackets*maxDatagramSize, nil),
 	}

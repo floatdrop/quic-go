@@ -1,9 +1,21 @@
 package congestion
 
 import (
+	"time"
+
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
 )
+
+// An RTTStatsProvider gives a congestion controller read access to the
+// connection's RTT estimates. It is the read-only subset of utils.RTTStats that
+// congestion control needs, so that a controller can be supplied from outside
+// this module without exposing the mutating half.
+type RTTStatsProvider interface {
+	MinRTT() time.Duration
+	LatestRTT() time.Duration
+	SmoothedRTT() time.Duration
+}
 
 // A SendAlgorithm performs congestion control
 type SendAlgorithm interface {
