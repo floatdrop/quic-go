@@ -86,6 +86,9 @@ var _ congestion.SendAlgorithmWithDebugInfos = CongestionController(nil)
 // connection. It is called when the connection is created, and again after each
 // path migration, since the previous path's model no longer describes the new
 // one.
+//
+// rttStats is never nil when quic-go calls the factory, and the controllers
+// quic-go ships with require it.
 type CongestionControllerFactory func(
 	rttStats RTTStatsProvider,
 	initialMaxDatagramSize ByteCount,
@@ -101,6 +104,8 @@ type CongestionControllerFactory func(
 // to Reno it sustains far more throughput on paths with random loss or
 // reordering, and holds a much shorter queue on paths with deep buffers, at the
 // cost of a few percent of throughput on clean high-bandwidth-delay paths.
+//
+// rttStats must not be nil.
 func NewBBRv3(rttStats RTTStatsProvider, initialMaxDatagramSize ByteCount, qlogger qlogwriter.Recorder) CongestionController {
 	return congestion.NewBBRSender(congestion.DefaultClock{}, rttStats, initialMaxDatagramSize, qlogger)
 }
@@ -110,6 +115,8 @@ func NewBBRv3(rttStats RTTStatsProvider, initialMaxDatagramSize ByteCount, qlogg
 // path that drops or reorders packets for reasons other than congestion it will
 // substantially underperform [NewBBRv3]. It is here so that a deployment can
 // compare the two on real traffic, and as a fallback.
+//
+// rttStats must not be nil.
 func NewReno(rttStats RTTStatsProvider, initialMaxDatagramSize ByteCount, qlogger qlogwriter.Recorder) CongestionController {
 	return congestion.NewCubicSender(congestion.DefaultClock{}, rttStats, initialMaxDatagramSize, true, qlogger)
 }
@@ -117,6 +124,8 @@ func NewReno(rttStats RTTStatsProvider, initialMaxDatagramSize ByteCount, qlogge
 // NewCubic returns the CUBIC controller of RFC 9438. Like [NewReno] it is
 // loss-based, but it recovers its window faster after a loss, which matters most
 // on paths with a high bandwidth-delay product.
+//
+// rttStats must not be nil.
 func NewCubic(rttStats RTTStatsProvider, initialMaxDatagramSize ByteCount, qlogger qlogwriter.Recorder) CongestionController {
 	return congestion.NewCubicSender(congestion.DefaultClock{}, rttStats, initialMaxDatagramSize, false, qlogger)
 }
