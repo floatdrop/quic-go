@@ -19,16 +19,32 @@ type pacer struct {
 }
 
 func newPacer(getBandwidth func() Bandwidth) *pacer {
+	return newPacerWithAdjustment(getBandwidth, 5, 4)
+}
+
+// newExactPacer returns a pacer that paces at exactly the rate getRate reports.
+// Congestion controllers that compute their own pacing rate — BBR sets it to
+// pacing_gain * bw * (1 - PacingMarginPercent/100) — must use this: the
+// headroom newPacer adds would override every gain in their state machine, and
+// pace above a rate the controller deliberately set below the bandwidth
+// estimate.
+func newExactPacer(getRate func() Bandwidth) *pacer {
+	return newPacerWithAdjustment(getRate, 1, 1)
+}
+
+// newPacerWithAdjustment builds a pacer that paces at getBandwidth() scaled by
+// num/denom.
+func newPacerWithAdjustment(getBandwidth func() Bandwidth, num, denom uint64) *pacer {
 	p := &pacer{
 		maxDatagramSize: initialMaxDatagramSize,
 		adjustedBandwidth: func() uint64 {
 			// Bandwidth is in bits/s. We need the value in bytes/s.
 			bw := uint64(getBandwidth() / BytesPerSecond)
-			// Use a slightly higher value than the actual measured bandwidth.
+			// For Reno / CUBIC, use a slightly higher value than the actual measured bandwidth.
 			// RTT variations then won't result in under-utilization of the congestion window.
 			// Ultimately, this will result in sending packets as acknowledgments are received rather than when timers fire,
 			// provided the congestion window is fully utilized and acknowledgments arrive at regular intervals.
-			return bw * 5 / 4
+			return bw * num / denom
 		},
 	}
 	p.budgetAtLastSent = p.maxBurstSize()
