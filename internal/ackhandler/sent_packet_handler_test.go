@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/quic-go/quic-go/internal/congestion"
 	"github.com/quic-go/quic-go/internal/mocks"
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
@@ -346,10 +347,14 @@ func TestSentPacketHandlerRTTAcrossPacketNumberSpaces(t *testing.T) {
 
 func TestSentPacketHandlerCongestionAcrossPacketNumberSpaces(t *testing.T) {
 	var eventRecorder events.Recorder
+	rttStats := utils.NewRTTStats()
+	connStats := &utils.ConnectionStats{}
 	sph := NewSentPacketHandler(
-		0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, true, false,
+		0, 1200, rttStats, connStats, true, false,
 		nil, protocol.PerspectiveServer, &eventRecorder, utils.DefaultLogger,
 	)
+	// This test checks Reno's recovery state transitions.
+	useReno(sph, rttStats, connStats, &eventRecorder)
 	var packets packetTracker
 	now := monotime.Now()
 	sendPacket := func(encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -1844,12 +1849,13 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 	const rtt = time.Second
 
 	var eventRecorder events.Recorder
+	rttStats := utils.NewRTTStats()
 	connStats := &utils.ConnectionStats{}
 
 	sph := NewSentPacketHandler(
 		0,
 		1200,
-		utils.NewRTTStats(),
+		rttStats,
 		connStats,
 		true,
 		false,
@@ -1858,6 +1864,8 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 		&eventRecorder,
 		utils.DefaultLogger,
 	)
+	// This test checks that Reno undoes a cutback after a spurious loss.
+	useReno(sph, rttStats, connStats, &eventRecorder)
 
 	var packets packetTracker
 	sendPacket := func(t *testing.T, ti monotime.Time) protocol.PacketNumber {
@@ -2096,4 +2104,12 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 			ranges = ranges[:0]
 		}
 	}
+}
+
+// useReno replaces the default congestion controller with Reno, for tests
+// that check Reno's loss response.
+func useReno(sph SentPacketHandler, rttStats *utils.RTTStats, connStats *utils.ConnectionStats, qlogger qlogwriter.Recorder) {
+	sph.(*sentPacketHandler).congestion = congestion.NewCubicSender(
+		congestion.DefaultClock{}, rttStats, connStats, 1200, true, qlogger,
+	)
 }
