@@ -133,12 +133,11 @@ const (
 )
 
 type bbrSender struct {
-	clock     Clock
-	rttStats  *utils.RTTStats
-	connStats *utils.ConnectionStats
-	pacer     *pacer
-	sampler   *bbrSampler
-	rand      utils.Rand
+	clock    Clock
+	rttStats RTTStatsProvider
+	pacer    *pacer
+	sampler  *bbrSampler
+	rand     utils.Rand
 
 	mode     bbrMode
 	ackPhase bbrAckPhase
@@ -235,15 +234,13 @@ var (
 // NewBBRSender creates a BBRv3 congestion controller.
 func NewBBRSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	initialMaxDatagramSize protocol.ByteCount,
 	qlogger qlogwriter.Recorder,
 ) *bbrSender {
 	return newBBRSender(
 		clock,
 		rttStats,
-		connStats,
 		initialMaxDatagramSize,
 		bbrInitialCwndPackets*initialMaxDatagramSize,
 		protocol.MaxCongestionWindowPackets*initialMaxDatagramSize,
@@ -253,8 +250,7 @@ func NewBBRSender(
 
 func newBBRSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	initialMaxDatagramSize,
 	initialCongestionWindow,
 	maxCongestionWindow protocol.ByteCount,
@@ -264,7 +260,6 @@ func newBBRSender(
 	b := &bbrSender{
 		clock:                   clock,
 		rttStats:                rttStats,
-		connStats:               connStats,
 		sampler:                 newBBRSampler(),
 		maxDatagramSize:         initialMaxDatagramSize,
 		initialCwnd:             initialCongestionWindow,
@@ -291,7 +286,6 @@ func newBBRSender(
 	b.pacer.SetMaxDatagramSize(initialMaxDatagramSize)
 	b.enterStartup()
 	b.initPacingRate()
-	b.publishCwnd()
 	return b
 }
 
@@ -335,7 +329,6 @@ func (b *bbrSender) OnPacketSent(
 	if isRetransmittable && bytesInFlight == bytes {
 		b.sampler.MarkAppLimited(bytesInFlight - bytes)
 		b.handleRestartFromIdle(sentTime)
-		b.publishCwnd() // leaving ProbeRTT restores the cwnd
 	}
 	b.pacer.SentPacket(sentTime, bytes, b.pacingRate)
 	b.sampler.OnPacketSent(sentTime, packetNumber, bytes, bytesInFlight, isRetransmittable)
@@ -374,7 +367,6 @@ func (b *bbrSender) OnPacketAcked(
 	// UpdateControlParameters(), §5.2.3.
 	b.setPacingRate()
 	b.setCwnd(rs)
-	b.publishCwnd()
 	b.maybeQlogStateChange()
 }
 
@@ -384,9 +376,6 @@ func (b *bbrSender) OnCongestionEvent(
 	lostBytes protocol.ByteCount,
 	priorInFlight protocol.ByteCount,
 ) {
-	b.connStats.PacketsLost.Add(1)
-	b.connStats.BytesLost.Add(uint64(lostBytes))
-
 	p, ok := b.sampler.OnPacketLost(number, lostBytes)
 	b.handleLostPacket(p, ok)
 
@@ -405,7 +394,6 @@ func (b *bbrSender) OnRetransmissionTimeout(packetsRetransmitted bool) {
 	b.saveCwnd()
 	// Allow exactly one packet out, then rebuild through the normal SetCwnd path.
 	b.cwnd = b.maxDatagramSize
-	b.publishCwnd()
 }
 
 func (b *bbrSender) SetMaxDatagramSize(s protocol.ByteCount) {
@@ -418,12 +406,6 @@ func (b *bbrSender) SetMaxDatagramSize(s protocol.ByteCount) {
 	}
 	b.pacer.SetMaxDatagramSize(s)
 	b.maxCongestionWindow = protocol.MaxCongestionWindowPackets * s
-	b.publishCwnd()
-}
-
-// publishCwnd exposes the current cwnd through ConnectionStats.
-func (b *bbrSender) publishCwnd() {
-	b.connStats.CongestionWindow.Store(uint64(b.cwnd))
 }
 
 // ---- SendAlgorithmWithDebugInfos ----

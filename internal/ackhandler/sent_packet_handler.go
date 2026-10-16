@@ -113,8 +113,11 @@ type sentPacketHandler struct {
 	bytesInFlight protocol.ByteCount
 
 	congestion congestion.SendAlgorithmWithDebugInfos
-	rttStats   *utils.RTTStats
-	connStats  *utils.ConnectionStats
+	// newCongestionController rebuilds the congestion controller after a path
+	// migration, when the old path's model no longer describes the connection.
+	newCongestionController CongestionControllerFactory
+	rttStats                *utils.RTTStats
+	connStats               *utils.ConnectionStats
 
 	// The number of times a PTO has been sent without receiving an ack.
 	ptoCount uint32
@@ -151,14 +154,12 @@ func NewSentPacketHandler(
 	pers protocol.Perspective,
 	qlogger qlogwriter.Recorder,
 	logger utils.Logger,
+	newCongestionController CongestionControllerFactory,
 ) SentPacketHandler {
-	congestion := congestion.NewBBRSender(
-		congestion.DefaultClock{},
-		rttStats,
-		connStats,
-		initialMaxDatagramSize,
-		qlogger,
-	)
+	if newCongestionController == nil {
+		newCongestionController = defaultCongestionController
+	}
+	congestion := newCongestionController(rttStats, initialMaxDatagramSize, qlogger)
 
 	h := &sentPacketHandler{
 		peerCompletedAddressValidation: pers == protocol.PerspectiveServer,
@@ -182,13 +183,23 @@ func NewSentPacketHandler(
 		perspective:        pers,
 		qlogger:            qlogger,
 		logger:             logger,
+
+		newCongestionController: newCongestionController,
 	}
 	if enableECN {
 		h.enableECN = true
 		h.ecnTracker = newECNTracker(logger, qlogger)
 	}
+	h.publishCongestionWindow()
 	h.qlogRecoveryParametersSet(true)
 	return h
+}
+
+// publishCongestionWindow exposes the congestion window through
+// ConnectionStats. Congestion controllers don't have access to the
+// ConnectionStats, so it is called after every call that can change the window.
+func (h *sentPacketHandler) publishCongestionWindow() {
+	h.connStats.CongestionWindow.Store(uint64(h.congestion.GetCongestionWindow()))
 }
 
 func (h *sentPacketHandler) qlogRecoveryParametersSet(initial bool) {
@@ -345,6 +356,7 @@ func (h *sentPacketHandler) SentPacket(
 		}
 	}
 	h.congestion.OnPacketSent(t, h.bytesInFlight, pn, size, isAckEliciting)
+	h.publishCongestionWindow()
 
 	if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
 		h.ecnTracker.SentPacket(pn, ecn)
@@ -505,6 +517,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 	for _, pn := range spuriousLosses {
 		h.congestion.OnSpuriousLoss(pn)
 	}
+	h.publishCongestionWindow()
 	if len(ackedPackets) == 0 {
 		if len(spuriousLosses) > 0 && h.qlogger != nil {
 			h.qlogMetricsUpdated()
@@ -528,6 +541,7 @@ func (h *sentPacketHandler) ReceivedAck(ack *wire.AckFrame, encLevel protocol.En
 			putPacket(p.packet)
 		}
 	}
+	h.publishCongestionWindow()
 
 	// After this point, we must not use ackedPackets any longer!
 	// We've already returned the buffers.
@@ -974,6 +988,8 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 				h.removeFromBytesInFlight(p)
 				h.queueFramesForRetransmission(p)
 				if !p.IsPathMTUProbePacket {
+					h.connStats.PacketsLost.Add(1)
+					h.connStats.BytesLost.Add(uint64(p.Length))
 					h.congestion.OnCongestionEvent(pn, p.Length, priorInFlight)
 				}
 				if encLevel == protocol.Encryption1RTT && h.ecnTracker != nil {
@@ -982,6 +998,7 @@ func (h *sentPacketHandler) detectLostPackets(now monotime.Time, encLevel protoc
 			}
 		}
 	}
+	h.publishCongestionWindow()
 	if h.handshakeConfirmed && h.handshakePNs != nil {
 		firstPN := h.hist.FirstPacketNumber()
 		highestPN := h.handshakePNs.Highest()
@@ -1149,6 +1166,7 @@ func (h *sentPacketHandler) TimeUntilSend() monotime.Time {
 
 func (h *sentPacketHandler) SetMaxDatagramSize(s protocol.ByteCount) {
 	h.congestion.SetMaxDatagramSize(s)
+	h.publishCongestionWindow()
 }
 
 func (h *sentPacketHandler) isAmplificationLimited() bool {
@@ -1254,13 +1272,8 @@ func (h *sentPacketHandler) MigratedPath(now monotime.Time, initialMaxDatagramSi
 	for pn := range h.hist.PathProbes() {
 		h.hist.RemovePathProbe(pn)
 	}
-	h.congestion = congestion.NewBBRSender(
-		congestion.DefaultClock{},
-		h.rttStats,
-		h.connStats,
-		initialMaxDatagramSize,
-		h.qlogger,
-	)
+	h.congestion = h.newCongestionController(h.rttStats, initialMaxDatagramSize, h.qlogger)
+	h.publishCongestionWindow()
 	h.qlogRecoveryParametersSet(true)
 	h.setLossDetectionTimer(now)
 }

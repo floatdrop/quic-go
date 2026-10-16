@@ -120,6 +120,7 @@ func testSentPacketHandlerSendAndAcknowledge(t *testing.T, encLevel protocol.Enc
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	var packets packetTracker
@@ -181,6 +182,7 @@ func TestSentPacketHandlerAcknowledgeSkippedPacket(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	now := monotime.Now()
@@ -224,6 +226,7 @@ func TestSentPacketHandlerRTTAckEliciting(t *testing.T) {
 		protocol.PerspectiveClient,
 		&eventRecorder,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	getPacketsInFlight := func() int {
@@ -312,6 +315,7 @@ func TestSentPacketHandlerRTTAcrossPacketNumberSpaces(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time, encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -347,14 +351,11 @@ func TestSentPacketHandlerRTTAcrossPacketNumberSpaces(t *testing.T) {
 
 func TestSentPacketHandlerCongestionAcrossPacketNumberSpaces(t *testing.T) {
 	var eventRecorder events.Recorder
-	rttStats := utils.NewRTTStats()
-	connStats := &utils.ConnectionStats{}
-	sph := NewSentPacketHandler(
-		0, 1200, rttStats, connStats, true, false,
-		nil, protocol.PerspectiveServer, &eventRecorder, utils.DefaultLogger,
-	)
 	// This test checks Reno's recovery state transitions.
-	useReno(sph, rttStats, connStats, &eventRecorder)
+	sph := NewSentPacketHandler(
+		0, 1200, utils.NewRTTStats(), &utils.ConnectionStats{}, true, false,
+		nil, protocol.PerspectiveServer, &eventRecorder, utils.DefaultLogger, newRenoController,
+	)
 	var packets packetTracker
 	now := monotime.Now()
 	sendPacket := func(encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -419,6 +420,7 @@ func testSentPacketHandlerRTTAckDelays(t *testing.T, encLevel protocol.Encryptio
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time) protocol.PacketNumber {
@@ -510,6 +512,7 @@ func testSentPacketHandlerAmplificationLimitServer(t *testing.T, addressValidate
 		protocol.PerspectiveServer,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	if addressValidated {
@@ -581,6 +584,7 @@ func testSentPacketHandlerAmplificationLimitClient(t *testing.T, dropHandshake b
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	require.Equal(t, SendAny, sph.SendMode(monotime.Now()))
@@ -637,6 +641,7 @@ func TestSentPacketHandlerDelayBasedLossDetection(t *testing.T) {
 		protocol.PerspectiveServer,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	var packets packetTracker
@@ -697,6 +702,7 @@ func TestSentPacketHandlerPacketBasedLossDetection(t *testing.T) {
 				protocol.PerspectiveServer,
 				nil,
 				utils.DefaultLogger,
+				nil,
 			)
 
 			var packets packetTracker
@@ -786,6 +792,7 @@ func TestSentPacketHandlerAdaptiveTimeThreshold(t *testing.T) {
 		protocol.PerspectiveServer,
 		&eventRecorder,
 		utils.DefaultLogger,
+		nil,
 	)
 	parameters := qlog.RecoveryParametersSet{
 		EncryptionLevel:         protocol.Encryption1RTT,
@@ -941,6 +948,7 @@ func testSentPacketHandlerPTO(t *testing.T, encLevel protocol.EncryptionLevel, p
 		protocol.PerspectiveServer,
 		&eventRecorder,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	// in the application-data packet number space, the PTO is only set
@@ -1159,6 +1167,7 @@ func TestSentPacketHandlerPacketNumberSpacesPTO(t *testing.T) {
 		protocol.PerspectiveServer,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	sendPacket := func(t *testing.T, ti monotime.Time, encLevel protocol.EncryptionLevel) protocol.PacketNumber {
@@ -1260,6 +1269,7 @@ func TestSentPacketHandler0RTT(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	var appDataPackets packetTracker
@@ -1304,6 +1314,8 @@ func TestSentPacketHandler0RTT(t *testing.T) {
 func TestSentPacketHandlerCongestion(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	cong := mocks.NewMockSendAlgorithmWithDebugInfos(mockCtrl)
+	// the congestion window is read to update the ConnectionStats
+	cong.EXPECT().GetCongestionWindow().AnyTimes()
 	rttStats := utils.NewRTTStats()
 	sph := NewSentPacketHandler(
 		0,
@@ -1316,6 +1328,7 @@ func TestSentPacketHandlerCongestion(t *testing.T) {
 		protocol.PerspectiveServer,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 	sph.(*sentPacketHandler).congestion = cong
 
@@ -1417,6 +1430,7 @@ func testSentPacketHandlerRetry(t *testing.T, rtt, expectedRTT time.Duration) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	start := monotime.Now()
@@ -1470,6 +1484,7 @@ func TestSentPacketHandlerRetryAfterPTO(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 
 	var packets packetTracker
@@ -1500,6 +1515,8 @@ func TestSentPacketHandlerRetryAfterPTO(t *testing.T) {
 func TestSentPacketHandlerECN(t *testing.T) {
 	mockCtrl := gomock.NewController(t)
 	cong := mocks.NewMockSendAlgorithmWithDebugInfos(mockCtrl)
+	// the congestion window is read to update the ConnectionStats
+	cong.EXPECT().GetCongestionWindow().AnyTimes()
 	cong.EXPECT().OnPacketSent(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	cong.EXPECT().OnPacketAcked(gomock.Any(), gomock.Any(), gomock.Any(), gomock.Any()).AnyTimes()
 	cong.EXPECT().MaybeExitSlowStart().AnyTimes()
@@ -1515,6 +1532,7 @@ func TestSentPacketHandlerECN(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 	sph.(*sentPacketHandler).ecnTracker = ecnHandler
 	sph.(*sentPacketHandler).congestion = cong
@@ -1633,6 +1651,7 @@ func TestSentPacketHandlerPathProbe(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1714,6 +1733,7 @@ func TestSentPacketHandlerPathProbeAckAndLoss(t *testing.T) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1791,6 +1811,7 @@ func testSentPacketHandlerRandomized(t *testing.T, seed uint64) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 	sph.DropPackets(protocol.EncryptionInitial, monotime.Now())
 	sph.DropPackets(protocol.EncryptionHandshake, monotime.Now())
@@ -1849,13 +1870,13 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 	const rtt = time.Second
 
 	var eventRecorder events.Recorder
-	rttStats := utils.NewRTTStats()
 	connStats := &utils.ConnectionStats{}
 
+	// This test checks that Reno undoes a cutback after a spurious loss.
 	sph := NewSentPacketHandler(
 		0,
 		1200,
-		rttStats,
+		utils.NewRTTStats(),
 		connStats,
 		true,
 		false,
@@ -1863,9 +1884,8 @@ func TestSentPacketHandlerSpuriousLoss(t *testing.T) {
 		protocol.PerspectiveClient,
 		&eventRecorder,
 		utils.DefaultLogger,
+		newRenoController,
 	)
-	// This test checks that Reno undoes a cutback after a spurious loss.
-	useReno(sph, rttStats, connStats, &eventRecorder)
 
 	var packets packetTracker
 	sendPacket := func(t *testing.T, ti monotime.Time) protocol.PacketNumber {
@@ -2066,6 +2086,7 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 		protocol.PerspectiveClient,
 		nil,
 		utils.DefaultLogger,
+		nil,
 	)
 	now := monotime.Now()
 	sph.DropPackets(protocol.EncryptionInitial, now)
@@ -2106,10 +2127,12 @@ func benchmarkSendAndAcknowledge(b *testing.B, ackEvery, inFlight int) {
 	}
 }
 
-// useReno replaces the default congestion controller with Reno, for tests
-// that check Reno's loss response.
-func useReno(sph SentPacketHandler, rttStats *utils.RTTStats, connStats *utils.ConnectionStats, qlogger qlogwriter.Recorder) {
-	sph.(*sentPacketHandler).congestion = congestion.NewCubicSender(
-		congestion.DefaultClock{}, rttStats, connStats, 1200, true, qlogger,
-	)
+// newRenoController is a CongestionControllerFactory for tests that check
+// Reno's loss response.
+func newRenoController(
+	rttStats congestion.RTTStatsProvider,
+	initialMaxDatagramSize protocol.ByteCount,
+	qlogger qlogwriter.Recorder,
+) congestion.SendAlgorithmWithDebugInfos {
+	return congestion.NewCubicSender(congestion.DefaultClock{}, rttStats, initialMaxDatagramSize, true, qlogger)
 }

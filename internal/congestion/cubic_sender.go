@@ -3,7 +3,6 @@ package congestion
 import (
 	"github.com/quic-go/quic-go/internal/monotime"
 	"github.com/quic-go/quic-go/internal/protocol"
-	"github.com/quic-go/quic-go/internal/utils"
 	"github.com/quic-go/quic-go/qlog"
 	"github.com/quic-go/quic-go/qlogwriter"
 )
@@ -39,8 +38,7 @@ func (s *renoUndoState) Reset() {
 
 type cubicSender struct {
 	hybridSlowStart HybridSlowStart
-	rttStats        *utils.RTTStats
-	connStats       *utils.ConnectionStats
+	rttStats        RTTStatsProvider
 	cubic           *Cubic
 	pacer           *pacer
 	clock           Clock
@@ -89,8 +87,7 @@ var (
 // NewCubicSender makes a new cubic sender
 func NewCubicSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	initialMaxDatagramSize protocol.ByteCount,
 	reno bool,
 	qlogger qlogwriter.Recorder,
@@ -98,7 +95,6 @@ func NewCubicSender(
 	return newCubicSender(
 		clock,
 		rttStats,
-		connStats,
 		reno,
 		initialMaxDatagramSize,
 		initialCongestionWindow*initialMaxDatagramSize,
@@ -109,8 +105,7 @@ func NewCubicSender(
 
 func newCubicSender(
 	clock Clock,
-	rttStats *utils.RTTStats,
-	connStats *utils.ConnectionStats,
+	rttStats RTTStatsProvider,
 	reno bool,
 	initialMaxDatagramSize,
 	initialCongestionWindow,
@@ -119,7 +114,6 @@ func newCubicSender(
 ) *cubicSender {
 	c := &cubicSender{
 		rttStats:                   rttStats,
-		connStats:                  connStats,
 		largestSentPacketNumber:    protocol.InvalidPacketNumber,
 		largestAckedPacketNumber:   protocol.InvalidPacketNumber,
 		largestSentAtLastCutback:   protocol.InvalidPacketNumber,
@@ -134,7 +128,6 @@ func newCubicSender(
 		qlogger:                    qlogger,
 		maxDatagramSize:            initialMaxDatagramSize,
 	}
-	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	if c.qlogger != nil {
 		c.lastState = qlog.CongestionStateSlowStart
 		c.qlogger.RecordEvent(qlog.CongestionStateUpdated{
@@ -212,16 +205,12 @@ func (c *cubicSender) OnPacketAcked(
 		return
 	}
 	c.maybeIncreaseCwnd(ackedPacketNumber, ackedBytes, priorInFlight, eventTime)
-	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	if c.InSlowStart() {
 		c.hybridSlowStart.OnPacketAcked(ackedPacketNumber)
 	}
 }
 
 func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lostBytes, priorInFlight protocol.ByteCount) {
-	c.connStats.PacketsLost.Add(1)
-	c.connStats.BytesLost.Add(uint64(lostBytes))
-
 	// TCP NewReno (RFC6582) says that once a loss occurs, any losses in packets
 	// already sent should be treated as a single loss event, since it's expected.
 	if packetNumber <= c.largestSentAtLastCutback {
@@ -252,7 +241,6 @@ func (c *cubicSender) OnCongestionEvent(packetNumber protocol.PacketNumber, lost
 	if minCwnd := c.minCongestionWindow(); c.congestionWindow < minCwnd {
 		c.congestionWindow = minCwnd
 	}
-	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	c.slowStartThreshold = c.congestionWindow
 	c.largestSentAtLastCutback = c.largestSentPacketNumber
 	// reset packet count from congestion avoidance mode. We start
@@ -283,7 +271,6 @@ func (c *cubicSender) OnSpuriousLoss(packetNumber protocol.PacketNumber) {
 	c.slowStartThreshold = state.slowStartThreshold
 	c.numAckedPackets = state.numAckedPackets
 	c.largestSentAtLastCutback = state.largestSentAtLastCutback
-	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	switch {
 	case c.InRecovery():
 		c.maybeQlogStateChange(qlog.CongestionStateRecovery)
@@ -375,7 +362,6 @@ func (c *cubicSender) OnRetransmissionTimeout(packetsRetransmitted bool) {
 	c.cubic.Reset()
 	c.slowStartThreshold = c.congestionWindow / 2
 	c.congestionWindow = c.minCongestionWindow()
-	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 }
 
 // OnConnectionMigration is called when the connection is migrated (?)
@@ -389,7 +375,6 @@ func (c *cubicSender) OnConnectionMigration() {
 	c.cubic.Reset()
 	c.numAckedPackets = 0
 	c.congestionWindow = c.initialCongestionWindow
-	c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	c.slowStartThreshold = c.initialMaxCongestionWindow
 }
 
@@ -406,7 +391,6 @@ func (c *cubicSender) SetMaxDatagramSize(s protocol.ByteCount) {
 	c.maxDatagramSize = s
 	if cwndIsMinCwnd {
 		c.congestionWindow = c.minCongestionWindow()
-		c.connStats.CongestionWindow.Store(uint64(c.congestionWindow))
 	}
 	c.pacer.SetMaxDatagramSize(s)
 }

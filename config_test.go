@@ -86,7 +86,7 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 		}
 
 		switch fn := typ.Field(i).Name; fn {
-		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer":
+		case "GetConfigForClient", "RequireAddressValidation", "GetLogWriter", "AllowConnectionWindowIncrease", "Tracer", "Congestion":
 			// Can't compare functions.
 		case "Versions":
 			f.Set(reflect.ValueOf([]Version{1, 2, 3}))
@@ -137,12 +137,16 @@ func configWithNonZeroNonFunctionFields(t *testing.T) *Config {
 
 func TestConfigClone(t *testing.T) {
 	t.Run("function fields", func(t *testing.T) {
-		var calledAllowConnectionWindowIncrease, calledTracer bool
+		var calledAllowConnectionWindowIncrease, calledTracer, calledCongestion bool
 		c1 := &Config{
 			GetConfigForClient:            func(info *ClientInfo) (*Config, error) { return nil, assert.AnError },
 			AllowConnectionWindowIncrease: func(*Conn, uint64) bool { calledAllowConnectionWindowIncrease = true; return true },
 			Tracer: func(context.Context, bool, ConnectionID) qlogwriter.Trace {
 				calledTracer = true
+				return nil
+			},
+			Congestion: func(RTTStatsProvider, ByteCount, qlogwriter.Recorder) CongestionController {
+				calledCongestion = true
 				return nil
 			},
 		}
@@ -153,6 +157,8 @@ func TestConfigClone(t *testing.T) {
 		require.ErrorIs(t, err, assert.AnError)
 		c2.Tracer(context.Background(), true, protocol.ConnectionID{})
 		require.True(t, calledTracer)
+		c2.Congestion(nil, 1200, nil)
+		require.True(t, calledCongestion)
 	})
 
 	t.Run("non-function fields", func(t *testing.T) {
