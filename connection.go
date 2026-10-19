@@ -820,11 +820,18 @@ type ConnectionStats struct {
 	// BandwidthEstimate is the congestion controller's estimate of the
 	// path's bandwidth, in bits per second, and PacingRate the rate it paces
 	// at now: BBR's bw and pacing_rate. Zero for a controller with no
-	// bandwidth model (Reno, CUBIC). The estimate comes of what was sent: on a
-	// path the application does not fill, it is the application's rate, a
-	// floor of the path's, not its capacity.
+	// bandwidth model (Reno, CUBIC). The estimate comes of what was sent: a
+	// flow the application does not fill stays in BBR's Startup, and its
+	// estimate is the most it was ever delivered at, however long ago.
 	BandwidthEstimate uint64
 	PacingRate        uint64
+	// DeliveryRate is the most the connection was delivered at over the last
+	// 10 seconds, in bits per second, as its acknowledgements measure it,
+	// whether or not the application filled the path: the path's rate where
+	// a burst queued at its bottleneck, else the application's, a floor of
+	// the path's. A path that slows brings it down within the 10 seconds.
+	// Zero for a controller with no bandwidth model, or no sample of late.
+	DeliveryRate uint64
 
 	// BytesSent is the number of bytes sent on the underlying connection,
 	// including retransmissions. Does not include UDP or any other outer
@@ -863,6 +870,7 @@ func (c *Conn) ConnectionStats() ConnectionStats {
 		CongestionWindow:  c.connStats.CongestionWindow.Load(),
 		BandwidthEstimate: c.connStats.BandwidthEstimate.Load(),
 		PacingRate:        c.connStats.PacingRate.Load(),
+		DeliveryRate:      c.connStats.DeliveryRate.Load(),
 
 		BytesSent:       c.connStats.BytesSent.Load(),
 		PacketsSent:     c.connStats.PacketsSent.Load(),

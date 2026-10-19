@@ -52,3 +52,15 @@ func TestWindowedMaxFilterClear(t *testing.T) {
 	f.Update(7, 0, 4)
 	require.Equal(t, int64(7), f.Best(), "the first sample after Clear must become the max")
 }
+
+func TestWindowedMaxFilterBestWithin(t *testing.T) {
+	var f windowedMaxFilter
+	const window = 4
+	require.Zero(t, f.BestWithin(0, window))
+	f.Update(100, 0, window)
+	f.Update(10, 3, window)
+	require.Equal(t, int64(100), f.BestWithin(4, window))
+	require.Equal(t, int64(10), f.BestWithin(5, window), "the 100 aged out without a sample to expire it")
+	require.Zero(t, f.BestWithin(8, window), "no sample within the window")
+	require.Equal(t, int64(100), f.Best(), "Best does not look at the time")
+}

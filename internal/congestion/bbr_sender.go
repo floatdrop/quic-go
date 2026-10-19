@@ -82,6 +82,10 @@ const bbrInfiniteInflight = protocol.MaxByteCount
 // bbrInfiniteBandwidth stands in for the draft's "Infinity" for rates.
 const bbrInfiniteBandwidth = Bandwidth(1<<62 - 1)
 
+// bbrDeliveryRateWindow is DeliveryRate's window, in wall-clock time: not part
+// of the model.
+const bbrDeliveryRateWindow = 10 * time.Second
+
 // bbrMode is the BBR state machine state. The draft models ProbeBW as one state
 // with four phases; flattening the phases into the state saves carrying a
 // second variable, and IsInAProbeBWState becomes a range check.
@@ -155,6 +159,11 @@ type bbrSender struct {
 	bwShortterm Bandwidth
 	bwLatest    Bandwidth
 	cycleCount  int64 // virtual time for maxBWFilter, §5.5.6
+
+	// The delivery rates sampled over the last bbrDeliveryRateWindow,
+	// application-limited ones included, by monotime: DeliveryRate. Not
+	// part of the model.
+	deliveryRates windowedMaxFilter
 
 	// Data volume model. §2.9.2.
 	minRTT            time.Duration
@@ -361,6 +370,9 @@ func (b *bbrSender) OnPacketAcked(
 		return
 	}
 	inflight := max(priorInFlight-ackedBytes, 0)
+	if rs.hasRate {
+		b.deliveryRates.Update(int64(rs.deliveryRate), int64(eventTime), int64(bbrDeliveryRateWindow))
+	}
 
 	// UpdateModelAndState(), §5.2.3.
 	b.updateLatestDeliverySignals(rs)
@@ -429,8 +441,20 @@ func (b *bbrSender) GetCongestionWindow() protocol.ByteCount { return b.cwnd }
 
 // BandwidthEstimate returns BBR.bw, the rate the model considers safe to send
 // at. It is exported for tests and for callers that want the model's view of
-// path capacity rather than cwnd/RTT.
+// path capacity rather than cwnd/RTT. A flow that is application-limited
+// without loss stays in Startup (§A.7), whose max_bw filter never advances:
+// its estimate is the most it was ever delivered at, however long ago.
 func (b *bbrSender) BandwidthEstimate() Bandwidth { return b.bw() }
+
+// DeliveryRate returns the most the flow was delivered at over the last
+// bbrDeliveryRateWindow, application-limited samples included, or zero
+// without a sample there. Each sample spans a round trip at least (§4.1.2.3),
+// so it measures the path where a burst queued at its bottleneck, and the
+// application's rate where none did: a floor of the path's rate, as of the
+// window, which a slower path brings down within it.
+func (b *bbrSender) DeliveryRate() Bandwidth {
+	return Bandwidth(b.deliveryRates.BestWithin(int64(b.clock.Now()), int64(bbrDeliveryRateWindow)))
+}
 
 // PacingRate returns BBR.pacing_rate, the rate it paces at now: the estimate
 // scaled by the gain of the phase it is in (probing above it, draining below).

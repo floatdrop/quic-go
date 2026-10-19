@@ -211,6 +211,7 @@ func (h *sentPacketHandler) publishCongestionWindow() {
 	if e, ok := h.congestion.(congestion.BandwidthEstimator); ok {
 		h.connStats.BandwidthEstimate.Store(uint64(e.BandwidthEstimate()))
 		h.connStats.PacingRate.Store(uint64(e.PacingRate()))
+		h.connStats.DeliveryRate.Store(uint64(e.DeliveryRate()))
 	}
 }
 

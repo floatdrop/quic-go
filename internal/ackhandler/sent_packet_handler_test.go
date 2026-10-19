@@ -2235,6 +2235,7 @@ func TestSentPacketHandlerPublishesBandwidth(t *testing.T) {
 			} else {
 				require.Zero(t, connStats.BandwidthEstimate.Load())
 				require.Zero(t, connStats.PacingRate.Load())
+				require.Zero(t, connStats.DeliveryRate.Load())
 			}
 		})
 	}

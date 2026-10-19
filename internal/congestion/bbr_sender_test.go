@@ -827,3 +827,75 @@ func TestBBRAppLimitedHookImprovesBurstLatency(t *testing.T) {
 	require.Less(t, with, without,
 		"marking application-limited should drain bursts faster: %v with, %v without", with, without)
 }
+
+// TestBBRDeliveryRateFollowsASlowerPath drives the sender as a video call
+// does, about 1 Mbps on a path far faster, then on a path slower than that.
+// The flow is application-limited throughout, so BBR's own estimate is no
+// guide; DeliveryRate measures the application's rate on the fast path, the
+// path's on the slow one, and nothing once the flow has gone quiet.
+func TestBBRDeliveryRateFollowsASlowerPath(t *testing.T) {
+	const (
+		fast          = 20 * 1000 * 1000 * BitsPerSecond
+		slow          = 600 * 1000 * BitsPerSecond
+		minRTT        = 50 * time.Millisecond
+		frameInterval = 33 * time.Millisecond
+		frameBytes    = protocol.ByteCount(4000) // ~970 kbps
+	)
+	appRate := BandwidthFromDelta(frameBytes, frameInterval)
+	sim := newBBRSim(t, bbrTestPath{bw: fast, minRTT: minRTT, bufferBytes: 1 << 20})
+	var queue protocol.ByteCount
+	nextFrame := sim.now()
+	call := func(d time.Duration, sending bool) {
+		end := sim.now().Add(d)
+		for sim.now().Before(end) {
+			if sending && !sim.now().Before(nextFrame) {
+				queue += frameBytes
+				nextFrame = nextFrame.Add(frameInterval)
+			}
+			sent := false
+			for queue > 0 && sim.sender.CanSend(sim.inflight) && sim.sender.HasPacingBudget(sim.now()) {
+				sim.send()
+				queue -= min(queue, maxDatagramSize)
+				sent = true
+			}
+			if queue == 0 && sim.sender.CanSend(sim.inflight) {
+				sim.sender.OnApplicationLimited(sim.inflight)
+			}
+			next := end
+			if ev, ok := sim.nextEvent(); ok && ev.Before(next) {
+				next = ev
+			}
+			if sending && nextFrame.Before(next) {
+				next = nextFrame
+			}
+			if until := sim.sender.TimeUntilSend(sim.inflight); queue > 0 &&
+				!until.IsZero() && until.After(sim.now()) && until.Before(next) {
+				next = until
+			}
+			if !next.After(sim.now()) {
+				if sent {
+					continue
+				}
+				next = sim.now().Add(time.Millisecond)
+			}
+			sim.clock.Advance(next.Sub(sim.now()))
+			sim.deliver()
+		}
+	}
+
+	call(15*time.Second, true)
+	onFast := sim.sender.DeliveryRate()
+	t.Logf("fast path: delivery rate %v, BBR's estimate %v, the application's %v", onFast, sim.sender.BandwidthEstimate(), appRate)
+	require.GreaterOrEqual(t, onFast, appRate*8/10, "at least the application's rate")
+
+	sim.path.bw = slow
+	call(15*time.Second, true)
+	onSlow := sim.sender.DeliveryRate()
+	t.Logf("slow path: delivery rate %v, BBR's estimate %v", onSlow, sim.sender.BandwidthEstimate())
+	require.InDelta(t, float64(slow), float64(onSlow), float64(slow)/4, "the slow path's rate, within the window")
+
+	// Quiet: what the slow path queued drains, then nothing is acknowledged.
+	call(2*bbrDeliveryRateWindow, false)
+	require.Empty(t, sim.pending)
+	require.Zero(t, sim.sender.DeliveryRate(), "no sample within the window")
+}

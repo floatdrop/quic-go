@@ -8,6 +8,7 @@ type ConnectionStats struct {
 	CongestionWindow  atomic.Uint64
 	BandwidthEstimate atomic.Uint64
 	PacingRate        atomic.Uint64
+	DeliveryRate      atomic.Uint64
 
 	BytesSent       atomic.Uint64
 	PacketsSent     atomic.Uint64

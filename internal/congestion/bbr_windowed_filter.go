@@ -78,6 +78,21 @@ func (f *windowedMaxFilter) Best() int64 {
 	return f.estimates[0].value
 }
 
+// BestWithin returns the maximum sample no older than windowLength at now,
+// or 0 if there is none: Best for a filter that may have had no sample since
+// its window moved on.
+func (f *windowedMaxFilter) BestWithin(now, windowLength int64) int64 {
+	if !f.initialized {
+		return 0
+	}
+	for _, s := range f.estimates {
+		if now-s.time <= windowLength {
+			return s.value
+		}
+	}
+	return 0
+}
+
 // Reset collapses the filter onto a single sample.
 func (f *windowedMaxFilter) Reset(value, now int64) {
 	s := windowedSample{value: value, time: now}
