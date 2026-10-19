@@ -203,10 +203,15 @@ func NewSentPacketHandler(
 }
 
 // publishCongestionWindow exposes the congestion window through
-// ConnectionStats. Congestion controllers don't have access to the
-// ConnectionStats, so it is called after every call that can change the window.
+// ConnectionStats, and the bandwidth model of a controller that has one.
+// Congestion controllers don't have access to the ConnectionStats, so it is
+// called after every call that can change them.
 func (h *sentPacketHandler) publishCongestionWindow() {
 	h.connStats.CongestionWindow.Store(uint64(h.congestion.GetCongestionWindow()))
+	if e, ok := h.congestion.(congestion.BandwidthEstimator); ok {
+		h.connStats.BandwidthEstimate.Store(uint64(e.BandwidthEstimate()))
+		h.connStats.PacingRate.Store(uint64(e.PacingRate()))
+	}
 }
 
 func (h *sentPacketHandler) qlogRecoveryParametersSet(initial bool) {

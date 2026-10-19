@@ -432,6 +432,12 @@ func (b *bbrSender) GetCongestionWindow() protocol.ByteCount { return b.cwnd }
 // path capacity rather than cwnd/RTT.
 func (b *bbrSender) BandwidthEstimate() Bandwidth { return b.bw() }
 
+// PacingRate returns BBR.pacing_rate, the rate it paces at now: the estimate
+// scaled by the gain of the phase it is in (probing above it, draining below).
+func (b *bbrSender) PacingRate() Bandwidth { return b.pacingRate }
+
+var _ BandwidthEstimator = (*bbrSender)(nil)
+
 // ---- Network path model: data rate (§5.5.2-§5.5.6) ----
 
 func (b *bbrSender) maxBW() Bandwidth { return Bandwidth(b.maxBWFilter.Best()) }

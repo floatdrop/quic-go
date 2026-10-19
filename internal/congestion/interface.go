@@ -46,6 +46,16 @@ type ApplicationLimitedHandler interface {
 	OnApplicationLimited(bytesInFlight protocol.ByteCount)
 }
 
+// A BandwidthEstimator is a SendAlgorithm with a model of the path's
+// bandwidth, as BBR's: the rate it believes the path delivers, and the rate it
+// paces at now. Loss-based controllers have no such model, which is why this is
+// a separate optional interface. The estimate comes of what was sent: on a path
+// the application does not fill it is the application's rate, not the path's.
+type BandwidthEstimator interface {
+	BandwidthEstimate() Bandwidth
+	PacingRate() Bandwidth
+}
+
 // A SendAlgorithmWithDebugInfos is a SendAlgorithm that exposes some debug infos
 type SendAlgorithmWithDebugInfos interface {
 	SendAlgorithm

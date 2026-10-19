@@ -2197,3 +2197,45 @@ func TestSentPacketHandlerOnApplicationLimited(t *testing.T) {
 		require.NotPanics(t, h.OnApplicationLimited)
 	})
 }
+
+// TestSentPacketHandlerPublishesBandwidth checks that a controller with a
+// bandwidth model (BBR) has its estimate and pacing rate published in the
+// ConnectionStats once packets are acknowledged, and that one without (Reno)
+// leaves them zero.
+func TestSentPacketHandlerPublishesBandwidth(t *testing.T) {
+	newBBR := func(rttStats congestion.RTTStatsProvider, initialMaxDatagramSize protocol.ByteCount, qlogger qlogwriter.Recorder) congestion.SendAlgorithmWithDebugInfos {
+		return congestion.NewBBRSender(congestion.DefaultClock{}, rttStats, initialMaxDatagramSize, qlogger)
+	}
+	for _, tc := range []struct {
+		name    string
+		factory func(congestion.RTTStatsProvider, protocol.ByteCount, qlogwriter.Recorder) congestion.SendAlgorithmWithDebugInfos
+		model   bool
+	}{
+		{"BBR", newBBR, true},
+		{"Reno", newRenoController, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			connStats := &utils.ConnectionStats{}
+			sph := NewSentPacketHandler(0, 1200, utils.NewRTTStats(), connStats, true, false, nil,
+				protocol.PerspectiveClient, nil, utils.DefaultLogger, tc.factory)
+			var packets packetTracker
+			start := monotime.Now()
+			var pns []protocol.PacketNumber
+			for i := range 10 {
+				pn := sph.PopPacketNumber(protocol.PacketNumberSpaceAppData)
+				sph.SentPacket(start.Add(time.Duration(i)*time.Millisecond), pn, protocol.InvalidPacketNumber, nil,
+					[]Frame{packets.NewPingFrame(pn)}, protocol.Encryption1RTT, protocol.ECNNon, 1000, false, false)
+				pns = append(pns, pn)
+			}
+			_, err := sph.ReceivedAck(&wire.AckFrame{AckRanges: ackRanges(pns...)}, protocol.Encryption1RTT, start.Add(50*time.Millisecond))
+			require.NoError(t, err)
+			if tc.model {
+				require.NotZero(t, connStats.BandwidthEstimate.Load())
+				require.NotZero(t, connStats.PacingRate.Load())
+			} else {
+				require.Zero(t, connStats.BandwidthEstimate.Load())
+				require.Zero(t, connStats.PacingRate.Load())
+			}
+		})
+	}
+}

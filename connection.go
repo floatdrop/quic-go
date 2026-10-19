@@ -817,6 +817,14 @@ type ConnectionStats struct {
 	// network path, in bytes. It limits bytes in flight and includes QUIC
 	// packet overhead, excluding UDP and IP headers.
 	CongestionWindow uint64
+	// BandwidthEstimate is the congestion controller's estimate of the
+	// path's bandwidth, in bits per second, and PacingRate the rate it paces
+	// at now: BBR's bw and pacing_rate. Zero for a controller with no
+	// bandwidth model (Reno, CUBIC). The estimate comes of what was sent: on a
+	// path the application does not fill, it is the application's rate, a
+	// floor of the path's, not its capacity.
+	BandwidthEstimate uint64
+	PacingRate        uint64
 
 	// BytesSent is the number of bytes sent on the underlying connection,
 	// including retransmissions. Does not include UDP or any other outer
@@ -852,7 +860,9 @@ func (c *Conn) ConnectionStats() ConnectionStats {
 		SmoothedRTT:   c.rttStats.SmoothedRTT(),
 		MeanDeviation: c.rttStats.MeanDeviation(),
 
-		CongestionWindow: c.connStats.CongestionWindow.Load(),
+		CongestionWindow:  c.connStats.CongestionWindow.Load(),
+		BandwidthEstimate: c.connStats.BandwidthEstimate.Load(),
+		PacingRate:        c.connStats.PacingRate.Load(),
 
 		BytesSent:       c.connStats.BytesSent.Load(),
 		PacketsSent:     c.connStats.PacketsSent.Load(),
