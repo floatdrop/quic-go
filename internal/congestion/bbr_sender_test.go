@@ -1005,6 +1005,15 @@ func TestBBRAppLimitedFlowLeavesStartupOnALossyNarrowPath(t *testing.T) {
 	t.Logf("delivery rate %v", sim.sender.DeliveryRate())
 	require.NotEqual(t, bbrStartup, sim.sender.mode, "the narrow path's loss ends Startup")
 	require.Less(t, after, 0.05, "out of Startup, bursts are paced to what the path carries")
+
+	// The path wide again: a call steps back up only when a burst shows it
+	// the way carries more (a probe, a keyframe), which the cap must not
+	// hold to the narrow path's rate once it loses nothing.
+	sim.path.bw = fast
+	sim.path.bufferBytes = 1 << 20
+	call(15*time.Second, 900, 15000)
+	t.Logf("wide again: pacing %v, delivery rate %v", sim.sender.PacingRate(), sim.sender.DeliveryRate())
+	require.Greater(t, sim.sender.PacingRate(), Bandwidth(5*1000*1000)*BitsPerSecond, "a burst paced at the wide path's rate again")
 }
 
 func TestBBRBurstScalesWithRate(t *testing.T) {

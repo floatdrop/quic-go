@@ -69,6 +69,9 @@ const (
 	// at over its recent DeliveryRate, once loss has ended its Startup: see
 	// setPacingRateWithGain.
 	bbrAppLimitedPacingGain = 1.5
+	// bbrAppLimitedCapHold is how long after a loss the cap holds: see
+	// setPacingRateWithGain.
+	bbrAppLimitedCapHold = 10 * time.Second
 	// bbrBurstDuration and bbrMinBurstPackets bound the pacer's bursts at a
 	// low rate: see burstSize.
 	bbrBurstDuration    = 10 * time.Millisecond
@@ -212,9 +215,11 @@ type bbrSender struct {
 	startupLossRounds int64
 	lastLossRound     int64
 	// lossEndedStartup says the path's loss, not a plateau, ended Startup;
-	// appLimitedAt is when a rate sample was last application-limited.
+	// appLimitedAt is when a rate sample was last application-limited, and
+	// lostAt when a packet was last lost.
 	lossEndedStartup bool
 	appLimitedAt     monotime.Time
+	lostAt           monotime.Time
 
 	// ProbeBW. §2.14.
 	cycleStamp             monotime.Time
@@ -980,6 +985,7 @@ func (b *bbrSender) lossEventsInRound() int64 { return b.startupLossEvents }
 // and checking at loss time reacts a round trip sooner.
 func (b *bbrSender) handleLostPacket(p bbrPacketState, tracked bool) {
 	b.noteLoss()
+	b.lostAt = b.clock.Now()
 	if b.mode == bbrStartup {
 		b.startupLossEvents++
 		if b.lastLossRound != b.roundCount {
@@ -1211,7 +1217,15 @@ func (b *bbrSender) setPacingRateWithGain(gain float64) {
 	// Application-limited is of the delivery rate's window: a burst's own
 	// samples are not, the burst having queued, and it is the burst the cap
 	// is for; a flow none of whose samples was of late paces as BBR does.
-	if b.lossEndedStartup && !b.appLimitedAt.IsZero() && b.clock.Now().Sub(b.appLimitedAt) < bbrDeliveryRateWindow {
+	// The cap holds bbrAppLimitedCapHold after a loss: the flow's delivery
+	// rate is its own rate wherever the path is wider, so a burst capped by
+	// it is delivered at no more than the cap, and once the path is wide
+	// again only an uncapped burst shows it (a viewer's probe of the way,
+	// read at the narrow path's rate, held its picture in the lower layer).
+	// Where the path is narrow still, the next burst's loss caps it again.
+	now := b.clock.Now()
+	if b.lossEndedStartup && !b.appLimitedAt.IsZero() && now.Sub(b.appLimitedAt) < bbrDeliveryRateWindow &&
+		!b.lostAt.IsZero() && now.Sub(b.lostAt) < bbrAppLimitedCapHold {
 		if delivered := b.DeliveryRate(); delivered > 0 {
 			rate = min(rate, Bandwidth(bbrAppLimitedPacingGain*float64(delivered)))
 		}
