@@ -203,14 +203,37 @@ func TestBBRStartupHighLossNeedsAFullRoundInRecovery(t *testing.T) {
 	require.True(t, s.fullBWReached)
 }
 
-func TestBBRStartupLossEventsResetEachRound(t *testing.T) {
+func TestBBRStartupLossEventsLastStartup(t *testing.T) {
 	s, _, _ := newTestBBRSender(t)
 	s.startupLossEvents = 4
-	// A new packet-timed round trip starts a fresh count: §5.3.1.3 counts loss
-	// ranges within one round, not across the whole recovery episode.
+	// A new packet-timed round trip keeps the count, and so does the end of a
+	// recovery episode: a flow that sends a few packets a round, or loses a
+	// burst at a time, loses bbrStartupFullLoss of them over several.
 	s.updateRound(bbrRateSample{priorDelivered: 0})
 	require.True(t, s.roundStart)
+	s.inLossRecovery = true
+	s.hasSeenLossInRound = false
+	s.setCwnd(bbrRateSample{})
+	require.False(t, s.inLossRecovery)
+	require.Equal(t, int64(4), s.startupLossEvents)
+	// Entering Startup again starts afresh.
+	s.enterStartup()
 	require.Zero(t, s.startupLossEvents)
+	require.Zero(t, s.startupLossRounds)
+}
+
+func TestBBRStartupHighLossTakesLossesInSeveralRounds(t *testing.T) {
+	s, _, _ := newTestBBRSender(t)
+	s.inLossRecovery = true
+	s.recoveryStartRound = 5
+	s.roundCount = 5 // recovery started this round
+	rs := bbrRateSample{txInFlight: 10 * maxDatagramSize, lost: 5 * maxDatagramSize}
+	s.startupLossRounds = bbrStartupLossRounds - 1
+	s.checkStartupHighLoss(bbrStartupFullLoss, rs)
+	require.False(t, s.fullBWReached, "losses in too few rounds")
+	s.startupLossRounds = bbrStartupLossRounds
+	s.checkStartupHighLoss(bbrStartupFullLoss, rs)
+	require.True(t, s.fullBWReached, "a burst lost again and again is the path's limit")
 }
 
 func TestBBRProbeBWCycleOrder(t *testing.T) {
@@ -898,4 +921,105 @@ func TestBBRDeliveryRateFollowsASlowerPath(t *testing.T) {
 	call(2*bbrDeliveryRateWindow, false)
 	require.Empty(t, sim.pending)
 	require.Zero(t, sim.sender.DeliveryRate(), "no sample within the window")
+}
+
+// TestBBRAppLimitedFlowLeavesStartupOnALossyNarrowPath drives the sender as a
+// video call does: about 1 Mbps with a keyframe a second on a path far
+// faster, then, the path narrowed to 500 kbps with a shallow buffer, the
+// call's middle layer, 330 kbps with smaller keyframes, which the path
+// carries on average. Startup's gain over the fast path's max_bw paces each keyframe
+// at line rate into the buffer, which drops most of it; a flow that sends a
+// few packets a round never loses bbrStartupFullLoss of them in one, so the
+// high-loss exit must count them over the recovery episode. Out of Startup,
+// the short-term bounds bring the pacing rate down to what is delivered.
+func TestBBRAppLimitedFlowLeavesStartupOnALossyNarrowPath(t *testing.T) {
+	const (
+		fast          = 20 * 1000 * 1000 * BitsPerSecond
+		slow          = 500 * 1000 * BitsPerSecond
+		minRTT        = 50 * time.Millisecond
+		frameInterval = 33 * time.Millisecond
+	)
+	sim := newBBRSim(t, bbrTestPath{bw: fast, minRTT: minRTT, bufferBytes: 1 << 20})
+	var queue protocol.ByteCount
+	nextFrame := sim.now()
+	frameNo := 0
+	call := func(d time.Duration, frame, keyframe protocol.ByteCount) {
+		end := sim.now().Add(d)
+		for sim.now().Before(end) {
+			if !sim.now().Before(nextFrame) {
+				n := frame
+				if frameNo%30 == 0 {
+					n = keyframe
+				}
+				queue += n
+				frameNo++
+				nextFrame = nextFrame.Add(frameInterval)
+			}
+			sent := false
+			for queue > 0 && sim.sender.CanSend(sim.inflight) && sim.sender.HasPacingBudget(sim.now()) {
+				sim.send()
+				queue -= min(queue, maxDatagramSize)
+				sent = true
+			}
+			if queue == 0 && sim.sender.CanSend(sim.inflight) {
+				sim.sender.OnApplicationLimited(sim.inflight)
+			}
+			next := end
+			if ev, ok := sim.nextEvent(); ok && ev.Before(next) {
+				next = ev
+			}
+			if nextFrame.Before(next) {
+				next = nextFrame
+			}
+			if until := sim.sender.TimeUntilSend(sim.inflight); queue > 0 &&
+				!until.IsZero() && until.After(sim.now()) && until.Before(next) {
+				next = until
+			}
+			if !next.After(sim.now()) {
+				if sent {
+					continue
+				}
+				next = sim.now().Add(time.Millisecond)
+			}
+			sim.clock.Advance(next.Sub(sim.now()))
+			sim.deliver()
+		}
+	}
+
+	call(15*time.Second, 4000, 60000)
+	require.Equal(t, bbrStartup, sim.sender.mode, "an application-limited flow without loss keeps Startup")
+
+	sim.path.bw = slow
+	sim.path.bufferBytes = bandwidthToBytes(slow, 150*time.Millisecond)
+	sentBefore, lostBefore := sim.nextPN, sim.lost
+	call(5*time.Second, 900, 15000) // the first seconds: the call steps down
+	sentFirst, lostFirst := sim.nextPN, sim.lost
+	call(15*time.Second, 900, 15000)
+	share := func(sent protocol.PacketNumber, lost int, sent0 protocol.PacketNumber, lost0 int) float64 {
+		return float64(lost-lost0) / float64(sent-sent0)
+	}
+	first := share(sentFirst, lostFirst, sentBefore, lostBefore)
+	after := share(sim.nextPN, sim.lost, sentFirst, lostFirst)
+	t.Logf("narrow path: %.1f%% lost in its first 5s, %.1f%% after; %v, pacing %v, estimate %v",
+		100*first, 100*after, sim.sender.mode, sim.sender.PacingRate(), sim.sender.BandwidthEstimate())
+	t.Logf("delivery rate %v", sim.sender.DeliveryRate())
+	require.NotEqual(t, bbrStartup, sim.sender.mode, "the narrow path's loss ends Startup")
+	require.Less(t, after, 0.05, "out of Startup, bursts are paced to what the path carries")
+}
+
+func TestBBRBurstScalesWithRate(t *testing.T) {
+	s, _, _ := newTestBBRSender(t)
+	// A slow path's pacing rate: two packets at once, not ten into its buffer.
+	require.Equal(t, bbrMinBurstPackets*s.maxDatagramSize, s.burstSize(500*1000*BitsPerSecond))
+	require.Equal(t, bandwidthToBytes(8*1000*1000*BitsPerSecond, bbrBurstDuration), s.burstSize(8*1000*1000*BitsPerSecond))
+	// A fast one's: quic-go's own burst, as before.
+	require.Equal(t, maxBurstSizePackets*s.maxDatagramSize, s.burstSize(50*1000*1000*BitsPerSecond))
+	// Another controller's pacer keeps quic-go's burst at any rate.
+	require.Equal(t, maxBurstSizePackets*s.maxDatagramSize, newPacerWithSize(s.maxDatagramSize).maxBurstSize(500*1000*BitsPerSecond))
+}
+
+func newPacerWithSize(size protocol.ByteCount) *pacer {
+	p := newPacer()
+	p.SetMaxDatagramSize(size)
+	return p
 }

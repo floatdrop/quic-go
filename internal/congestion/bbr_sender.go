@@ -59,9 +59,20 @@ const (
 	bbrPacingMarginPercent = 1
 
 	// Startup exit. §5.3.1.2, §5.3.1.3.
-	bbrFullBWThreshold  = 1.25
-	bbrFullBWCount      = 3
-	bbrStartupFullLoss  = 6
+	bbrFullBWThreshold = 1.25
+	bbrFullBWCount     = 3
+	bbrStartupFullLoss = 6
+	// bbrStartupLossRounds is how many rounds with loss in Startup stand for
+	// the full round in recovery of §5.3.1.3: see checkStartupHighLoss.
+	bbrStartupLossRounds = 3
+	// bbrAppLimitedPacingGain is the most an application-limited flow paces
+	// at over its recent DeliveryRate, once loss has ended its Startup: see
+	// setPacingRateWithGain.
+	bbrAppLimitedPacingGain = 1.5
+	// bbrBurstDuration and bbrMinBurstPackets bound the pacer's bursts at a
+	// low rate: see burstSize.
+	bbrBurstDuration    = 10 * time.Millisecond
+	bbrMinBurstPackets  = 2
 	bbrMaxBwFilterLen   = 2  // §2.11, in ProbeBW cycles
 	bbrExtraAckedLenNow = 1  // §5.5.9, in rounds, during Startup
 	bbrExtraAckedLen    = 10 // §5.5.9, in rounds, after Startup
@@ -195,8 +206,15 @@ type bbrSender struct {
 	fullBWNow     bool
 	fullBWReached bool
 	// startupLossEvents counts distinct lost packets since entering Startup,
-	// for the high-loss exit criterion of §5.3.1.3.
+	// and startupLossRounds the rounds they were lost in (lastLossRound the
+	// last of them), for the high-loss exit criterion of §5.3.1.3.
 	startupLossEvents int64
+	startupLossRounds int64
+	lastLossRound     int64
+	// lossEndedStartup says the path's loss, not a plateau, ended Startup;
+	// appLimitedAt is when a rate sample was last application-limited.
+	lossEndedStartup bool
+	appLimitedAt     monotime.Time
 
 	// ProbeBW. §2.14.
 	cycleStamp             monotime.Time
@@ -294,6 +312,7 @@ func newBBRSender(
 	// machine.
 	b.pacer = newPacer()
 	b.pacer.SetMaxDatagramSize(initialMaxDatagramSize)
+	b.pacer.burst = b.burstSize
 	b.enterStartup()
 	b.initPacingRate()
 	return b
@@ -372,6 +391,9 @@ func (b *bbrSender) OnPacketAcked(
 	inflight := max(priorInFlight-ackedBytes, 0)
 	if rs.hasRate {
 		b.deliveryRates.Update(int64(rs.deliveryRate), int64(eventTime), int64(bbrDeliveryRateWindow))
+		if rs.isAppLimited {
+			b.appLimitedAt = eventTime
+		}
 	}
 
 	// UpdateModelAndState(), §5.2.3.
@@ -480,7 +502,6 @@ func (b *bbrSender) updateRound(rs bbrRateSample) {
 		b.roundsSinceProbeUp++
 		b.roundStart = true
 		b.cwndLimited = false
-		b.startupLossEvents = 0
 	} else {
 		b.roundStart = false
 	}
@@ -606,6 +627,9 @@ func (b *bbrSender) updateACKAggregation(rs bbrRateSample, now monotime.Time) {
 
 func (b *bbrSender) enterStartup() {
 	b.setMode(bbrStartup)
+	b.startupLossEvents = 0
+	b.startupLossRounds = 0
+	b.lastLossRound = -1
 	b.pacingGain = bbrStartupPacingGain
 	b.cwndGain = bbrDefaultCwndGain
 }
@@ -642,14 +666,26 @@ func (b *bbrSender) checkStartupDone() {
 
 // checkStartupHighLoss implements §5.3.1.3. quic-go always has selective
 // acknowledgements, so all three criteria apply: we must be in recovery for a
-// full round, the round's loss rate must exceed LossThresh, and at least
-// bbrStartupFullLoss distinct packets must have been lost in the round.
+// full round, the loss rate must exceed LossThresh, and at least
+// bbrStartupFullLoss distinct packets must have been lost.
+//
+// One deviation, for an application-limited flow: the draft counts the lost
+// packets within one round, and wants the recovery to last one; we count them
+// since entering Startup, and take bbrStartupLossRounds rounds with loss for
+// the full round in recovery. A flow that sends a few packets a round, as one
+// at a few hundred kbps does, or that loses a burst at a time, each followed
+// by rounds without loss, could otherwise never leave Startup however much it
+// lost: §A.7 keeps such a flow in Startup while it loses nothing, and its
+// pacing gain over a faster path's max_bw then puts every burst into a
+// narrow path's buffer at line rate, which drops a sixth of what is sent even
+// when the flow fits the path on average. A bulk flow loses a round's worth
+// at once, which the draft's criteria take as they were.
 func (b *bbrSender) checkStartupHighLoss(lossEventsThisRound int64, rs bbrRateSample) {
 	if b.mode != bbrStartup || !b.inLossRecovery {
 		return
 	}
-	if b.roundCount <= b.recoveryStartRound {
-		return // not yet a full packet-timed round trip in recovery
+	if b.roundCount <= b.recoveryStartRound && b.startupLossRounds < bbrStartupLossRounds {
+		return // not yet a full packet-timed round trip in recovery, nor losses in enough rounds
 	}
 	if lossEventsThisRound < bbrStartupFullLoss {
 		return
@@ -658,6 +694,7 @@ func (b *bbrSender) checkStartupHighLoss(lossEventsThisRound int64, rs bbrRateSa
 		return
 	}
 	b.fullBWReached = true
+	b.lossEndedStartup = true
 	b.inflightLongterm = max(b.bdp(), b.inflightLatest)
 }
 
@@ -945,6 +982,10 @@ func (b *bbrSender) handleLostPacket(p bbrPacketState, tracked bool) {
 	b.noteLoss()
 	if b.mode == bbrStartup {
 		b.startupLossEvents++
+		if b.lastLossRound != b.roundCount {
+			b.lastLossRound = b.roundCount
+			b.startupLossRounds++
+		}
 	}
 	if !tracked {
 		return
@@ -1010,6 +1051,18 @@ func (b *bbrSender) quantizationBudget(inflightCap protocol.ByteCount) protocol.
 		inflightCap += 2 * b.maxDatagramSize
 	}
 	return inflightCap
+}
+
+// burstSize is the most the pacer releases at once at rate: bbrBurstDuration
+// of it, at least bbrMinBurstPackets and at most maxBurstSizePackets, as
+// quic-go's pacer releases at any rate. maxBurstSizePackets at line rate on a
+// path of a few hundred kbps is more than a shallow buffer holds (a 500 kbps
+// path's 150ms is 7 packets), which dropped what of each burst followed: a
+// keyframe paced at the path's rate lost its first packets' tail all the
+// same. From about 12 Mbps up it is maxBurstSizePackets.
+func (b *bbrSender) burstSize(rate Bandwidth) protocol.ByteCount {
+	scaled := bandwidthToBytes(rate, bbrBurstDuration)
+	return min(maxBurstSizePackets*b.maxDatagramSize, max(bbrMinBurstPackets*b.maxDatagramSize, scaled))
 }
 
 // offloadBudget is the QUIC form of §5.5.8.2. quic-go's pacer releases up to
@@ -1145,6 +1198,24 @@ func (b *bbrSender) setPacingRateWithGain(gain float64) {
 		return
 	}
 	rate := Bandwidth(gain * float64(bw) * (100 - bbrPacingMarginPercent) / 100)
+	// An application-limited flow's max_bw is the most it was ever delivered
+	// at: application-limited samples cannot lower it (§5.5.4), nor advance
+	// its filter. On a path narrower than that one, every burst left at
+	// max_bw's rate into the narrow path's buffer, which dropped a sixth of
+	// what was sent even where the flow fitted the path on average. Once the
+	// path's loss has ended Startup, such a flow paces at most
+	// bbrAppLimitedPacingGain over its own recent delivery rate, which is the
+	// path's where a burst queued at its bottleneck: a burst then queues
+	// there for a moment, not past its buffer. Where the path is wider, a
+	// burst paced so is delivered at that rate, and the cap rises with it.
+	// Application-limited is of the delivery rate's window: a burst's own
+	// samples are not, the burst having queued, and it is the burst the cap
+	// is for; a flow none of whose samples was of late paces as BBR does.
+	if b.lossEndedStartup && !b.appLimitedAt.IsZero() && b.clock.Now().Sub(b.appLimitedAt) < bbrDeliveryRateWindow {
+		if delivered := b.DeliveryRate(); delivered > 0 {
+			rate = min(rate, Bandwidth(bbrAppLimitedPacingGain*float64(delivered)))
+		}
+	}
 	if b.fullBWReached || rate > b.pacingRate {
 		b.pacingRate = rate
 	}
@@ -1177,7 +1248,6 @@ func (b *bbrSender) setCwnd(rs bbrRateSample) {
 	if b.inLossRecovery && !b.hasSeenLossInRound && b.roundStart {
 		b.inLossRecovery = false
 		b.restoreCwnd()
-		b.startupLossEvents = 0
 	}
 	if b.roundStart {
 		b.hasSeenLossInRound = false

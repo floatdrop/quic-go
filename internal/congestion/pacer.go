@@ -20,6 +20,9 @@ type pacer struct {
 	budgetAtLastSent protocol.ByteCount
 	maxDatagramSize  protocol.ByteCount
 	lastSentTime     monotime.Time
+	// burst, if set, is the most the pacer releases at once at rate, in
+	// place of maxBurstSizePackets: its controller's to choose.
+	burst func(rate Bandwidth) protocol.ByteCount
 }
 
 func newPacer() *pacer {
@@ -55,10 +58,11 @@ func (p *pacer) Budget(now monotime.Time, rate Bandwidth) protocol.ByteCount {
 }
 
 func (p *pacer) maxBurstSize(rate Bandwidth) protocol.ByteCount {
-	return max(
-		p.timeScaledBandwidth(minPacingDelay+protocol.TimerGranularity, rate),
-		maxBurstSizePackets*p.maxDatagramSize,
-	)
+	burst := maxBurstSizePackets * p.maxDatagramSize
+	if p.burst != nil {
+		burst = p.burst(rate)
+	}
+	return max(p.timeScaledBandwidth(minPacingDelay+protocol.TimerGranularity, rate), burst)
 }
 
 // timeScaledBandwidth calculates the number of bytes that may be sent within
